@@ -4,11 +4,11 @@ import shutil
 import uuid
 import qrcode
 import random
+import json
 from flask import Flask, request, jsonify, send_from_directory, abort
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
 
 # --------------------
 # Configuration
@@ -16,15 +16,17 @@ from datetime import datetime
 app = Flask(__name__)
 CORS(app)
 
+# Upload folder
 UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Database setup
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///transfers.db'
+# Database config
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///file_transfers.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+# Allowed extensions
 ALLOWED_EXTENSIONS = set([
     'png','jpg','jpeg','gif','mp4','mov','pdf','docx','pptx','txt',
     'py','js','java','c','cpp','html','css','zip','rar','csv','xlsx'
@@ -35,16 +37,17 @@ ALLOWED_EXTENSIONS = set([
 # --------------------
 class Transfer(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    token = db.Column(db.String(32), unique=True, nullable=False)
-    zip_filename = db.Column(db.String(256), nullable=False)
-    qr_filename = db.Column(db.String(256), nullable=False)
-    email = db.Column(db.String(256))
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    token = db.Column(db.String(12), unique=True, nullable=False)
+    files = db.Column(db.Text)  # JSON string of file paths
+    email = db.Column(db.String(120))
+    zip_path = db.Column(db.String(256))
+    qr_path = db.Column(db.String(256))
 
-db.create_all()
+with app.app_context():
+    db.create_all()
 
 # --------------------
-# Helpers
+# Helper Functions
 # --------------------
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -108,6 +111,42 @@ def upload_files():
         return jsonify({'error': 'No valid files saved'}), 400
     return jsonify({'saved': saved})
 
+@app.route('/api/organize', methods=['POST'])
+def api_organize():
+    data = request.json or {}
+    files = data.get('files', [])
+    if not files:
+        return jsonify({'error': 'No files provided'}), 400
+    target = os.path.join(app.config['UPLOAD_FOLDER'], 'organized_' + str(uuid.uuid4())[:8])
+    os.makedirs(target, exist_ok=True)
+    organize_files(files, target)
+    zipname = target + ".zip"
+    shutil.make_archive(target, 'zip', target)
+    return jsonify({'zip_path': zipname, 'download_token': os.path.basename(zipname)})
+
+@app.route('/api/extract', methods=['POST'])
+def api_extract():
+    data = request.json or {}
+    zippath = data.get('zip')
+    if not zippath or not os.path.exists(zippath):
+        return jsonify({'error': 'Zip not found'}), 400
+    extract_dir = zippath + "_extracted_" + str(uuid.uuid4())[:6]
+    os.makedirs(extract_dir, exist_ok=True)
+    with zipfile.ZipFile(zippath, 'r') as zf:
+        zf.extractall(extract_dir)
+    return jsonify({'extracted_dir': extract_dir})
+
+@app.route('/api/scan', methods=['POST'])
+def api_scan():
+    data = request.json or {}
+    files = data.get('files', [])
+    results = []
+    for f in files:
+        ok = random.random() > 0.1
+        results.append({'file': f, 'clean': ok, 'message': 'clean' if ok else 'infected'})
+    summary = {'total': len(files), 'clean': sum(1 for r in results if r['clean']), 'infected': sum(1 for r in results if not r['clean'])}
+    return jsonify({'results': results, 'summary': summary})
+
 @app.route('/api/transfer', methods=['POST'])
 def api_transfer():
     data = request.json or {}
@@ -135,34 +174,19 @@ def api_transfer():
     qr_path = os.path.join(app.config['UPLOAD_FOLDER'], f"qr_{token}.png")
     qr_img.save(qr_path)
 
-    # Save transfer info in database
-    transfer = Transfer(
-        token=token,
-        zip_filename=os.path.basename(zip_out),
-        qr_filename=os.path.basename(qr_path),
-        email=email
-    )
-    db.session.add(transfer)
-    db.session.commit()
+    # Save transfer info to database
+    with app.app_context():
+        t = Transfer(
+            token=token,
+            files=json.dumps(files),
+            email=email,
+            zip_path=zip_out,
+            qr_path=qr_path
+        )
+        db.session.add(t)
+        db.session.commit()
 
-    return jsonify({
-        'token': token,
-        'link': link,
-        'qr': f"/files/{os.path.basename(qr_path)}",
-        'zip': os.path.basename(zip_out)
-    })
-
-@app.route('/api/transfers', methods=['GET'])
-def list_transfers():
-    transfers = Transfer.query.order_by(Transfer.created_at.desc()).all()
-    data = [{
-        'token': t.token,
-        'zip': t.zip_filename,
-        'qr': t.qr_filename,
-        'email': t.email,
-        'created_at': t.created_at.isoformat()
-    } for t in transfers]
-    return jsonify(data)
+    return jsonify({'token': token, 'link': link, 'qr': f"/files/{os.path.basename(qr_path)}", 'zip': os.path.basename(zip_out)})
 
 @app.route('/download/<filename>', methods=['GET'])
 def download_file(filename):
