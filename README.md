@@ -6,7 +6,7 @@ A web-based application to upload, organize, scan, extract, and transfer files e
 
 ## 🚀 Hosted Links
 
-- **Frontend:** [https://fileorganizerfrontend.netlify.app/transfer](https://fileorganizerfrontend.netlify.app/transfer)  
+- **Frontend:** [https://fileorganizerfrontend.netlify.app](https://fileorganizerfrontend.netlify.app)  
 - **Backend:** [https://file-organiser-backend.onrender.com](https://file-organiser-backend.onrender.com)
 
 ---
